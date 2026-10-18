@@ -1,0 +1,321 @@
+name: Pipeline CI/CD
+
+# ========================
+# Gatilhos da pipeline
+# ========================
+# Executa a pipeline:
+# - Em pushes para main;
+# - Em pushes de tags de versão, por exemplo v1.0.0;
+# - Em pull requests destinados à branch main;
+# - Manualmente, através do GitHub Actions.
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags: ['v*.*.*']
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# ========================
+# Controlo de concorrência
+# ========================
+# Evita executar simultaneamente várias versões da mesma
+# pipeline para a mesma branch ou tag.
+#
+# Atenção: uma execução em curso pode ser cancelada por uma nova execução com a mesma referência.
+  
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ========================
+# Variáveis globais
+# ========================
+env:
+  IMAGE_NAME: api-agendamentos
+
+permissions:
+  contents: read # Princípio do menor privilégio
+
+jobs:
+
+  # ========================
+  # 1. Secret Scanning
+  # ========================
+  # Procura possíveis segredos expostos no repositório,
+  # como tokens, passwords e chaves de API.
+  #
+  # O histórico completo permite analisar também commits anteriores, em vez de considerar apenas o último commit.
+
+  gitleaks:
+    name: 1. Secret Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Executar Gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ========================
+  # 2. SAST
+  # ========================
+  # Analisa o código-fonte em busca de padrões associados a vulnerabilidades, sem executar a aplicação.
+  #
+  # O conjunto de regras JavaScript inclui verificações relevantes para projetos Node.js e TypeScript.
+
+  sast:
+    name: 2. SAST com Semgrep
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Executar análise de segurança
+        run: semgrep scan --config p/javascript
+
+  # ========================
+  # 3. Qualidade, Testes e Build
+  # ========================
+  # Valida os tipos TypeScript, executa os testes e constrói a aplicação.
+  #
+  # O PostgreSQL fica disponível para os testes que precisem de uma base de dados real.
+  #
+  # Os testes que não dependem da base de dados continuam a ser executados normalmente.
+
+  quality:
+    name: 3. Qualidade, Testes e Build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agendamentos
+
+        ports:
+          - 5432:5432
+
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agendamentos"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agendamentos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Checagem estática de tipos (TypeScript)
+        run: npm run typecheck
+
+      - name: Build da aplicação
+        run: npm run build
+
+  # ======================
+  # 4. Validação da Imagem Docker
+  # ======================
+  # Só avança quando os controlos de segurança e qualidade forem concluídos com sucesso.
+  #
+  # O Dockerfile é validado com Hadolint, a imagem é
+  # construída e a API é iniciada contra um PostgreSQL real.
+  #
+  # O endpoint /health confirma que a aplicação responde.
+
+  docker-validate:
+    name: 4. Build e Teste da Imagem Docker
+    runs-on: ubuntu-latest
+
+    needs:
+      - gitleaks
+      - sast
+      - quality
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agendamentos
+
+        ports:
+          - 5432:5432
+
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agendamentos"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validar Dockerfile com Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Construir imagem Docker para validação
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Executa a API na rede do runner Linux para permitir
+      # o acesso ao PostgreSQL através de localhost:5432.
+      - name: Iniciar container da API
+        run: |
+          docker run -d \
+            --name api \
+            --network host \
+            -e NODE_ENV=production \
+            -e PORT=3000 \
+            -e DATABASE_URL=postgres://postgres:postgres@localhost:5432/agendamentos \
+            ${{ env.IMAGE_NAME }}:ci
+
+      # Aguarda a inicialização da API e verifica o endpoint
+      # de saúde. Se não responder, a etapa falha.
+      - name: Validar saúde da API
+        run: |
+          for i in $(seq 1 15); do
+            if curl --fail --silent --show-error \
+              http://localhost:3000/health; then
+              echo
+              echo "A API está saudável."
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "A API não respondeu ao endpoint /health."
+          exit 1
+
+      # Apresenta o tamanho da imagem para acompanhamento.
+      - name: Consultar tamanho da imagem
+        if: success()
+        run: docker image ls ${{ env.IMAGE_NAME }}:ci
+
+      # Recolhe os logs quando ocorre uma falha.
+      - name: Diagnóstico do container
+        if: failure()
+        run: docker logs api || true
+
+      # Remove o container independentemente do resultado.
+      - name: Limpeza do container de teste
+        if: always()
+        run: docker rm -f api || true
+
+  # ======================
+  # 5. Publicação no Docker Hub
+  # ======================
+  # A imagem só é publicada após a validação do Docker.
+  #
+  # A publicação ocorre em pushes para main ou em tags de versão. Pull requests nunca publicam imagens.
+  #
+  # A tag latest é reservada para a branch main.
+  # As versões são identificadas através de tags semânticas, quando a execução é originada por uma tag Git válida.
+
+  publish:
+    name: 5. Publicação no Docker Hub
+    runs-on: ubuntu-latest
+
+    needs:
+      - docker-validate
+
+    if: >-
+      github.event_name != 'pull_request' &&
+      (
+        github.ref == 'refs/heads/main' ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Autenticar no Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Gerar tags e metadados da imagem
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+
+          flavor: |
+            latest=false
+
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=build-${{ github.run_number }}
+            type=sha,format=short,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Construir e publicar imagem no Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Regista as tags publicadas no resumo da execução.
+      - name: Resumo da publicação
+        run: |
+          {
+            echo "### Imagem publicada no Docker Hub :whale:"
+            echo
+            echo '```text'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
