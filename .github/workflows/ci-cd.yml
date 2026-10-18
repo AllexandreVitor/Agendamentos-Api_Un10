@@ -88,3 +88,57 @@ jobs:
 
       - name: Executar análise de segurança
         run: semgrep scan --config p/javascript
+
+  # ========================
+  # 3. Qualidade, Testes e Build
+  # ========================
+  # Valida os tipos TypeScript, executa os testes e constrói a aplicação.
+  #
+  # O PostgreSQL fica disponível para os testes que precisem de uma base de dados real.
+  #
+  # Os testes que não dependem da base de dados continuam a ser executados normalmente.
+
+  quality:
+    name: 3. Qualidade, Testes e Build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agendamentos
+
+        ports:
+          - 5432:5432
+
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agendamentos"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agendamentos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Checagem estática de tipos (TypeScript)
+        run: npm run typecheck
+
+      - name: Build da aplicação
+        run: npm run build
