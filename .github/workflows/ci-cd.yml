@@ -51,7 +51,7 @@ jobs:
   # O histórico completo permite analisar também commits anteriores, em vez de considerar apenas o último commit.
 
   gitleaks:
-    name: 1. Secrete Scanning
+    name: 1. Secret Scanning
     runs-on: ubuntu-latest
 
     steps:
@@ -74,7 +74,7 @@ jobs:
 
   sast:
     name: 2. SAST com Semgrep
-    runs-on: ubutuntu-latest
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
