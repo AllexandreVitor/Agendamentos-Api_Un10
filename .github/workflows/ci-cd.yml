@@ -1,5 +1,8 @@
 name: Pipeline CI/CD
 
+# ========================
+# Gatilhos da pipeline
+# ========================
 on:
   push:
     branches:
@@ -11,6 +14,44 @@ on:
       - main
   workflow_dispatch:
 
+# ========================
+# Evita execuções desnecessárias em paralelo
+# ========================
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ========================
+# Variáveis globais
+# ========================
 env:
   IMAGE_NAME: api-agendamentos
+
+permissions:
+  contents: read # Princípio do menor privilégio
+
+jobs:
+
+  # ========================
+  # 1. Secret Scanning
+  # ========================
+  # Procura possíveis segredos expostos no repositório,
+  # como tokens, passwords e chaves de API.
+  #
+  # O histórico completo permite analisar também commits
+  # anteriores, em vez de considerar apenas o último commit.
+
+  gitleaks:
+    name: 1. Secrete Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Executar Gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
