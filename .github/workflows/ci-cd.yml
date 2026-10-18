@@ -1,0 +1,16 @@
+name: Pipeline CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags: ['v*.*.*']
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: api-agendamentos
+
