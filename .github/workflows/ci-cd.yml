@@ -246,3 +246,76 @@ jobs:
         if: always()
         run: docker rm -f api || true
 
+  # ======================
+  # 5. Publicação no Docker Hub
+  # ======================
+  # A imagem só é publicada após a validação do Docker.
+  #
+  # A publicação ocorre em pushes para main ou em tags de versão. Pull requests nunca publicam imagens.
+  #
+  # A tag latest é reservada para a branch main.
+  # As versões são identificadas através de tags semânticas, quando a execução é originada por uma tag Git válida.
+
+  publish:
+    name: 5. Publicação no Docker Hub
+    runs-on: ubuntu-latest
+
+    needs:
+      - docker-validate
+
+    if: >-
+      github.event_name != 'pull_request' &&
+      (
+        github.ref == 'refs/heads/main' ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Autenticar no Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Gerar tags e metadados da imagem
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+
+          flavor: |
+            latest=false
+
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=build-${{ github.run_number }}
+            type=sha,format=short,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Construir e publicar imagem no Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Regista as tags publicadas no resumo da execução.
+      - name: Resumo da publicação
+        run: |
+          {
+            echo "### Imagem publicada no Docker Hub :whale:"
+            echo
+            echo '```text'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
