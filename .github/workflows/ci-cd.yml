@@ -26,6 +26,8 @@ on:
 # pipeline para a mesma branch ou tag.
 #
 # Atenção: uma execução em curso pode ser cancelada por uma nova execução com a mesma referência.
+  
+concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
