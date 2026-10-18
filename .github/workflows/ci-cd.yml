@@ -3,6 +3,11 @@ name: Pipeline CI/CD
 # ========================
 # Gatilhos da pipeline
 # ========================
+# Executa a pipeline:
+# - Em pushes para main;
+# - Em pushes de tags de versão, por exemplo v1.0.0;
+# - Em pull requests destinados à branch main;
+# - Manualmente, através do GitHub Actions.
 on:
   push:
     branches:
@@ -15,8 +20,12 @@ on:
   workflow_dispatch:
 
 # ========================
-# Evita execuções desnecessárias em paralelo
+# Controlo de concorrência
 # ========================
+# Evita executar simultaneamente várias versões da mesma
+# pipeline para a mesma branch ou tag.
+#
+# Atenção: uma execução em curso pode ser cancelada por uma nova execução com a mesma referência.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -37,8 +46,7 @@ jobs:
   # Procura possíveis segredos expostos no repositório,
   # como tokens, passwords e chaves de API.
   #
-  # O histórico completo permite analisar também commits
-  # anteriores, em vez de considerar apenas o último commit.
+  # O histórico completo permite analisar também commits anteriores, em vez de considerar apenas o último commit.
 
   gitleaks:
     name: 1. Secrete Scanning
@@ -55,3 +63,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ========================
+  # 2. SAST
+  # ========================
+  # Analisa o código-fonte em busca de padrões associados a vulnerabilidades, sem executar a aplicação.
+  #
+  # O conjunto de regras JavaScript inclui verificações relevantes para projetos Node.js e TypeScript.
+
+  sast:
+    name: 2. SAST com Semgrep
+    runs-on: ubutuntu-latest
+
+    permissions:
+      contents: read
+
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Executar análise de segurança
+        run: semgrep scan --config p/javascript
