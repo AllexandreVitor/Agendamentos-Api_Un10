@@ -21,7 +21,7 @@ COPY tsconfig.json ./
 COPY src ./src
 
 # Compila e gera o bundle da API em dist/server.js.
-RUN npm 
+RUN npm run build
 
 # ======================
 # Estágio 2: Dependências de produção
